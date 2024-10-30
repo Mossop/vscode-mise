@@ -1,0 +1,76 @@
+{
+  "name": "vscode-mise",
+  "displayName": "Mise Tasks",
+  "description": "Autodetect mise tasks in VS Code",
+  "version": "0.1.0",
+  "license": "MIT",
+  "publisher": "fractalbrew",
+  "preview": true,
+  "extensionKind": [
+    "workspace"
+  ],
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onTaskType:mise",
+    "workspaceContains:.config/mise/**/config.toml",
+    "workspaceContains:.config/mise/**/config.*.toml",
+    "workspaceContains:.mise/config.toml",
+    "workspaceContains:.mise/config.*.toml",
+    "workspaceContains:mise/config.toml",
+    "workspaceContains:mise/config.*.toml",
+    "workspaceContains:.mise.toml",
+    "workspaceContains:.mise.*.toml",
+    "workspaceContains:mise.toml",
+    "workspaceContains:mise.*.toml"
+  ],
+  "contributes": {
+    "configuration": {
+      "title": "Mise Tasks",
+      "properties": {
+        "mise.path": {
+          "type": "string",
+          "scope": "resource",
+          "markdownDescription": "The path to the `mise` binary."
+        }
+      }
+    },
+    "taskDefinitions": [
+      {
+        "type": "mise",
+        "required": [
+          "task"
+        ],
+        "properties": {
+          "task": {
+            "type": "string",
+            "description": "The mise task to execute"
+          }
+        }
+      }
+    ]
+  },
+  "main": "./out/extension.js",
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src"
+  },
+  "devDependencies": {
+    "@mossop/config": "^2.0.5",
+    "@types/vscode": "^1.95.0",
+    "@types/mocha": "^10.0.9",
+    "@types/node": "20.x",
+    "@typescript-eslint/eslint-plugin": "^8.10.0",
+    "@typescript-eslint/parser": "^8.7.0",
+    "eslint": "^9.13.0",
+    "typescript": "^5.6.3",
+    "@vscode/test-cli": "^0.0.10",
+    "@vscode/test-electron": "^2.4.1"
+  }
+}

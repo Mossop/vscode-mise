@@ -1,0 +1,10 @@
+{
+  "extends": "@mossop/config/vscode/tsconfig",
+
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "out",
+  },
+
+  "include": ["src/**/*"],
+}
