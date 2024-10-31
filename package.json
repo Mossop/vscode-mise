@@ -50,8 +50,22 @@
         ],
         "properties": {
           "task": {
-            "type": "string",
-            "description": "The mise task to execute"
+            "description": "The mise task(s) to execute",
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            ]
+          },
+          "watch": {
+            "description": "Automatically re-run the task if its sources change.",
+            "type": "boolean"
           }
         }
       }
@@ -71,6 +85,7 @@
     "typescript": "^5.6.3"
   },
   "dependencies": {
-    "shell-args": "^1.0.0"
+    "shell-args": "^1.0.0",
+    "ts.data.json": "^2.2.0"
   }
 }

@@ -4,6 +4,9 @@ node = "22"
 [env]
 _.path = ["./node_modules/.bin"]
 
+[tasks.test]
+run = "echo 'hello'"
+
 [tasks.lint]
 description = "Run lint tests"
 run = "eslint src"
@@ -25,7 +28,6 @@ sources = [
   "src/**/*.js",
   "node_modules/**/*",
 ]
-outputs = ["tsconfig.tsbuildinfo"]
 
 [tasks.package]
 description = "Package extension to VSIX"

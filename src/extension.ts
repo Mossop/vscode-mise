@@ -5,7 +5,6 @@ import {
   Task,
   WorkspaceFolder,
   workspace,
-  ProviderResult,
   LogOutputChannel,
   TaskProvider,
   Disposable,
@@ -15,11 +14,18 @@ import {
 import { promises as fs } from "node:fs";
 import { exec, execFile } from "node:child_process";
 import { shellQuote } from "shell-args";
+import {
+  MiseTaskDecoder,
+  MiseTaskDefinition,
+  MiseTaskDefinitionDecoder,
+  MiseTaskSummariesDecoder,
+} from "./types";
+import { JsonDecoder } from "ts.data.json";
 
-interface MiseTaskJson {
-  name: string;
-  source: string;
-  description: string;
+class CancelledError extends Error {
+  constructor() {
+    super("User cancelled");
+  }
 }
 
 async function isFile(path: string) {
@@ -46,6 +52,11 @@ function shellExec(
       shellQuote(args),
       { cwd, windowsHide: true, signal: abortController.signal },
       (err, stdout) => {
+        if (cancel?.isCancellationRequested) {
+          reject(new CancelledError());
+          return;
+        }
+
         if (err) {
           reject(err);
         } else {
@@ -77,6 +88,11 @@ function processExec(
       args,
       { cwd, windowsHide: true, signal: abortController.signal },
       (err, stdout) => {
+        if (cancel?.isCancellationRequested) {
+          reject(new CancelledError());
+          return;
+        }
+
         if (err) {
           // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
           reject(err);
@@ -107,14 +123,35 @@ class MiseBinary {
     return this.#binary;
   }
 
-  async exec<T>(args: string[], cancel?: CancellationToken) {
+  taskExecutor(task: MiseTaskDefinition): ProcessExecution {
+    let tasks = Array.isArray(task.task) ? task.task : [task.task];
+
+    if (task.watch) {
+      let args = tasks.map((t) => ["-t", t]).flat();
+      return new ProcessExecution(this.binary, ["watch", ...args], {
+        cwd: this.#folder.uri.fsPath,
+      });
+    } else {
+      let args = [tasks.shift()!, ...tasks.map((t) => [":::", t]).flat()];
+      return new ProcessExecution(this.binary, ["run", ...args], {
+        cwd: this.#folder.uri.fsPath,
+      });
+    }
+  }
+
+  async exec<T>(
+    args: string[],
+    decoder: JsonDecoder.Decoder<T>,
+    cancel?: CancellationToken
+  ): Promise<T> {
     let output = await processExec(
       this.#binary,
       args,
       this.#folder.uri.fsPath,
       cancel
     );
-    return JSON.parse(output.trim()) as unknown as T;
+
+    return decoder.decodeToPromise(JSON.parse(output.trim()));
   }
 
   static async init(
@@ -171,7 +208,7 @@ class MiseBinary {
   }
 }
 
-class Mise extends Disposable implements TaskProvider {
+class ExtensionGlobal extends Disposable implements TaskProvider {
   #channel: LogOutputChannel;
   #miseBinary = new Map<string, MiseBinary>();
   #taskDisposable: Disposable;
@@ -210,32 +247,71 @@ class Mise extends Disposable implements TaskProvider {
     cancel?: CancellationToken
   ): Promise<Task[]> {
     let mise = await this.miseBinary(folder);
+    let tasks: Task[] = [];
 
     try {
-      let tasks = await mise.exec<MiseTaskJson[]>(
+      let summaries = await mise.exec(
         ["tasks", "ls", "-J"],
+        MiseTaskSummariesDecoder,
         cancel
       );
 
-      return tasks.map(
-        (t) =>
-          new Task(
-            { type: "mise", task: t.name },
-            folder,
-            t.name,
-            "mise",
-            new ProcessExecution(mise.binary, ["run", t.name], {
-              cwd: folder.uri.fsPath,
+      let taskInfos = await Promise.all(
+        summaries.map((summary) =>
+          mise
+            .exec(["task", "info", summary.name, "-J"], MiseTaskDecoder, cancel)
+            .catch((e) => {
+              this.#channel.error(
+                `Error retrieving task ${summary.name} info`,
+                e
+              );
+              return null;
             })
-          )
+        )
       );
+
+      for (let taskInfo of taskInfos) {
+        if (!taskInfo || taskInfo.hide) {
+          continue;
+        }
+
+        let taskDefinition: MiseTaskDefinition = {
+          type: "mise",
+          task: taskInfo.name,
+        };
+
+        tasks.push(
+          new Task(
+            taskDefinition,
+            folder,
+            taskInfo.name,
+            "mise",
+            mise.taskExecutor(taskDefinition)
+          )
+        );
+
+        // TODO detect presence of watchexec
+        if (taskInfo.sources.length) {
+          tasks.push(
+            new Task(
+              { type: "mise", task: taskInfo.name, watch: true },
+              folder,
+              `watch ${taskInfo.name}`,
+              "mise",
+              mise.taskExecutor(taskDefinition)
+            )
+          );
+        }
+      }
+
+      return tasks;
     } catch (e) {
       this.#channel.error(`Failed to find tasks from folder ${folder.uri}`, e);
       return [];
     }
   }
 
-  async provideTasks(cancel?: CancellationToken): Promise<Task[]> {
+  async provideTasks(cancel: CancellationToken): Promise<Task[]> {
     let tasks: Task[] = [];
     for (let folder of workspace.workspaceFolders ?? []) {
       let folderTasks = await this.provideFolderTasks(folder, cancel);
@@ -245,13 +321,22 @@ class Mise extends Disposable implements TaskProvider {
     return tasks;
   }
 
-  resolveTask(_task: Task): ProviderResult<Task> {
-    return undefined;
+  async resolveTask(task: Task): Promise<Task | undefined> {
+    if (typeof task.scope !== "object") {
+      // Only support folder level tasks.
+      return undefined;
+    }
+
+    let miseBinary = await this.miseBinary(task.scope);
+    let definition = await MiseTaskDefinitionDecoder.decodeToPromise(
+      task.definition
+    );
+    task.execution = miseBinary.taskExecutor(definition);
   }
 }
 
 export function activate(context: ExtensionContext) {
-  context.subscriptions.push(new Mise());
+  context.subscriptions.push(new ExtensionGlobal());
 }
 
 // This method is called when your extension is deactivated
