@@ -1,0 +1,32 @@
+name: push
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Mise and tools
+        uses: jdx/mise-action@v2
+
+      - name: Install node modules
+        run: npm install
+
+      - name: Lint check
+        run: mise run lint
+
+      - name: Compile
+        run: mise run compile
+
+      - name: Package
+        run:
+          npm install -g vsce
+          mise run package

@@ -1,0 +1,35 @@
+[tools]
+node = "22"
+
+[env]
+_.path = ["./node_modules/.bin"]
+
+[tasks.lint]
+description = "Run lint tests"
+run = "eslint src"
+sources = [
+  "package.json",
+  "package-lock.json",
+  "tsconfig.json",
+  "eslint.config.mjs",
+  "src/**/*.ts",
+]
+
+[tasks.compile]
+description = "Compile extension"
+run = "tsc -p ./"
+sources = [
+  "package.json",
+  "package-lock.json",
+  "tsconfig.json",
+  "src/**/*.js",
+  "node_modules/**/*",
+]
+outputs = ["tsconfig.tsbuildinfo"]
+
+[tasks.package]
+description = "Package extension to VSIX"
+depends = ["compile"]
+run = "npm exec -y vsce package"
+sources = ["package.json", "package-lock.json", ".vscodeignore", "out/**/*.js"]
+outputs = ["vscode-mise-*.vsix"]
