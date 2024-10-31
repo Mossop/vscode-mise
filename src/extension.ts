@@ -10,6 +10,7 @@ import {
   TaskProvider,
   Disposable,
   ProcessExecution,
+  CancellationToken,
 } from "vscode";
 import { promises as fs } from "node:fs";
 import { exec, execFile } from "node:child_process";
@@ -30,32 +31,64 @@ async function isFile(path: string) {
   }
 }
 
-function shellExec(args: string[], cwd: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    exec(shellQuote(args), { cwd }, (err, stdout) => {
-      if (err) {
-        reject(err);
-      } else {
-        resolve(stdout);
+function shellExec(
+  args: string[],
+  cwd: string,
+  cancel?: CancellationToken
+): Promise<string> {
+  let abortController = new AbortController();
+  let disposable = cancel
+    ? cancel.onCancellationRequested(() => abortController.abort())
+    : null;
+
+  return new Promise<string>((resolve, reject) => {
+    exec(
+      shellQuote(args),
+      { cwd, windowsHide: true, signal: abortController.signal },
+      (err, stdout) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve(stdout);
+        }
       }
-    });
+    );
+  }).finally(() => {
+    if (disposable) {
+      disposable.dispose();
+    }
   });
 }
 
 function processExec(
   binary: string,
   args: string[],
-  cwd: string
+  cwd: string,
+  cancel?: CancellationToken
 ): Promise<string> {
-  return new Promise((resolve, reject) => {
-    execFile(binary, args, { cwd }, (err, stdout) => {
-      if (err) {
-        // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
-        reject(err);
-      } else {
-        resolve(stdout);
+  let abortController = new AbortController();
+  let disposable = cancel
+    ? cancel.onCancellationRequested(() => abortController.abort())
+    : null;
+
+  return new Promise<string>((resolve, reject) => {
+    execFile(
+      binary,
+      args,
+      { cwd, windowsHide: true, signal: abortController.signal },
+      (err, stdout) => {
+        if (err) {
+          // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+          reject(err);
+        } else {
+          resolve(stdout);
+        }
       }
-    });
+    );
+  }).finally(() => {
+    if (disposable) {
+      disposable.dispose();
+    }
   });
 }
 
@@ -74,8 +107,13 @@ class MiseBinary {
     return this.#binary;
   }
 
-  async exec<T>(...args: string[]) {
-    let output = await processExec(this.#binary, args, this.#folder.uri.fsPath);
+  async exec<T>(args: string[], cancel?: CancellationToken) {
+    let output = await processExec(
+      this.#binary,
+      args,
+      this.#folder.uri.fsPath,
+      cancel
+    );
     return JSON.parse(output.trim()) as unknown as T;
   }
 
@@ -167,11 +205,17 @@ class Mise extends Disposable implements TaskProvider {
     }
   }
 
-  async provideFolderTasks(folder: WorkspaceFolder): Promise<Task[]> {
+  async provideFolderTasks(
+    folder: WorkspaceFolder,
+    cancel?: CancellationToken
+  ): Promise<Task[]> {
     let mise = await this.miseBinary(folder);
 
     try {
-      let tasks = await mise.exec<MiseTaskJson[]>("tasks", "ls", "-J");
+      let tasks = await mise.exec<MiseTaskJson[]>(
+        ["tasks", "ls", "-J"],
+        cancel
+      );
 
       return tasks.map(
         (t) =>
@@ -191,10 +235,10 @@ class Mise extends Disposable implements TaskProvider {
     }
   }
 
-  async provideTasks(): Promise<Task[]> {
+  async provideTasks(cancel?: CancellationToken): Promise<Task[]> {
     let tasks: Task[] = [];
     for (let folder of workspace.workspaceFolders ?? []) {
-      let folderTasks = await this.provideFolderTasks(folder);
+      let folderTasks = await this.provideFolderTasks(folder, cancel);
       tasks.push(...folderTasks);
     }
 
