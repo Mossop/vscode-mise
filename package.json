@@ -5,6 +5,9 @@
   "version": "0.1.0",
   "license": "MIT",
   "publisher": "fractalbrew",
+  "repository": {
+    "url": "https://github.com/Mossop/vscode-mise"
+  },
   "preview": true,
   "extensionKind": [
     "workspace"
@@ -55,12 +58,6 @@
     ]
   },
   "main": "./out/extension.js",
-  "scripts": {
-    "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./",
-    "lint": "eslint src"
-  },
   "devDependencies": {
     "@mossop/config": "^2.0.5",
     "@types/mocha": "^10.0.9",
