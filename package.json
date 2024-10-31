@@ -9,6 +9,7 @@
     "url": "https://github.com/Mossop/vscode-mise"
   },
   "preview": true,
+  "icon": "icon.png",
   "extensionKind": [
     "workspace"
   ],
