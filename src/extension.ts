@@ -7,9 +7,13 @@ import {
   workspace,
   ProviderResult,
   LogOutputChannel,
-  ShellExecution,
+  TaskProvider,
+  Disposable,
+  ProcessExecution,
 } from "vscode";
-import { exec } from "node:child_process";
+import { promises as fs } from "node:fs";
+import { exec, execFile } from "node:child_process";
+import { shellQuote } from "shell-args";
 
 interface MiseTaskJson {
   name: string;
@@ -17,9 +21,18 @@ interface MiseTaskJson {
   description: string;
 }
 
-function pexec(args: string[], cwd: string): Promise<string> {
+async function isFile(path: string) {
+  try {
+    let stat = await fs.stat(path);
+    return stat.isFile();
+  } catch (_e) {
+    return false;
+  }
+}
+
+function shellExec(args: string[], cwd: string): Promise<string> {
   return new Promise((resolve, reject) => {
-    exec(args.join(" "), { cwd }, (err, stdout) => {
+    exec(shellQuote(args), { cwd }, (err, stdout) => {
       if (err) {
         reject(err);
       } else {
@@ -29,69 +42,172 @@ function pexec(args: string[], cwd: string): Promise<string> {
   });
 }
 
-function binary(folder: WorkspaceFolder): string {
-  let config = workspace.getConfiguration("mise", folder);
-
-  // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing
-  return config.get<string>("path") || "mise";
+function processExec(
+  binary: string,
+  args: string[],
+  cwd: string
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(binary, args, { cwd }, (err, stdout) => {
+      if (err) {
+        // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+        reject(err);
+      } else {
+        resolve(stdout);
+      }
+    });
+  });
 }
 
-function mise(folder: WorkspaceFolder, ...args: string[]): Promise<string> {
-  return pexec([binary(folder), ...args], folder.uri.fsPath);
+class MiseBinary {
+  #folder: WorkspaceFolder;
+  #binary: string;
+
+  static minVersion = [2024, 10, 13];
+
+  private constructor(folder: WorkspaceFolder, binary: string) {
+    this.#folder = folder;
+    this.#binary = binary;
+  }
+
+  get binary(): string {
+    return this.#binary;
+  }
+
+  async exec<T>(...args: string[]) {
+    let output = await processExec(this.#binary, args, this.#folder.uri.fsPath);
+    return JSON.parse(output.trim()) as unknown as T;
+  }
+
+  static async init(
+    channel: LogOutputChannel,
+    folder: WorkspaceFolder
+  ): Promise<MiseBinary> {
+    let config = workspace.getConfiguration("mise", folder);
+
+    let binary = config.get<string>("path");
+    if (binary) {
+      if (!(await isFile(binary))) {
+        channel.warn(`${binary} is not an executable file, ignoring setting`);
+        binary = undefined;
+      }
+    }
+
+    if (!binary) {
+      try {
+        let output = await shellExec(["which", "mise"], folder.uri.fsPath);
+        binary = output.trim();
+
+        if (!binary || !(await isFile(binary))) {
+          binary = undefined;
+        }
+      } catch (e) {
+        channel.warn("Unable to call shell to find mise", e);
+      }
+    }
+
+    if (!binary) {
+      throw new Error("Unable to find the mise binary.");
+    }
+
+    let output = await processExec(binary, ["--version"], folder.uri.fsPath);
+    let match = /(\d+)\.(\d+)\.(\d+)/.exec(output.trim());
+    if (!match) {
+      throw new Error(`Unexpected output from mise: ${output.trim()}`);
+    }
+
+    let miseVersion = match.slice(1);
+    channel.info(`Found mise version ${miseVersion.join(".")}`);
+    for (let i = 0; i < MiseBinary.minVersion.length; i++) {
+      let part = parseInt(miseVersion[i]);
+      if (part < MiseBinary.minVersion[i]) {
+        throw new Error(
+          `Mise binary is version ${miseVersion.join(".")} but this extension requires at least ${MiseBinary.minVersion.join(".")}`
+        );
+      } else if (part > MiseBinary.minVersion[i]) {
+        break;
+      }
+    }
+
+    return new MiseBinary(folder, binary);
+  }
 }
 
-async function provideFolderTasks(
-  channel: LogOutputChannel,
-  folder: WorkspaceFolder
-): Promise<Task[]> {
-  channel.info("Providing tasks");
+class Mise extends Disposable implements TaskProvider {
+  #channel: LogOutputChannel;
+  #miseBinary = new Map<string, MiseBinary>();
+  #taskDisposable: Disposable;
 
-  try {
-    let tasks = JSON.parse(
-      await mise(folder, "tasks", "ls", "-J")
-    ) as unknown as MiseTaskJson[];
+  constructor() {
+    super(() => this.#onDispose());
 
-    return tasks.map(
-      (t) =>
-        new Task(
-          { type: "mise", task: t.name },
-          folder,
-          t.name,
-          "mise",
-          new ShellExecution(`${binary(folder)} run ${t.name}`, {
-            cwd: folder.uri.fsPath,
-          })
-        )
-    );
-  } catch (e) {
-    channel.error(`Failed to find tasks from folder ${folder.uri}`, e);
-    return [];
+    this.#channel = window.createOutputChannel("Mise Tasks", { log: true });
+    this.#channel.info("Activated");
+
+    this.#taskDisposable = tasks.registerTaskProvider("mise", this);
+  }
+
+  #onDispose() {
+    this.#taskDisposable.dispose();
+  }
+
+  async miseBinary(folder: WorkspaceFolder): Promise<MiseBinary> {
+    let binary = this.#miseBinary.get(folder.uri.toString());
+    if (binary) {
+      return binary;
+    }
+
+    try {
+      binary = await MiseBinary.init(this.#channel, folder);
+      this.#miseBinary.set(folder.uri.toString(), binary);
+      return binary;
+    } catch (e) {
+      window.showErrorMessage(String(e));
+      throw e;
+    }
+  }
+
+  async provideFolderTasks(folder: WorkspaceFolder): Promise<Task[]> {
+    let mise = await this.miseBinary(folder);
+
+    try {
+      let tasks = await mise.exec<MiseTaskJson[]>("tasks", "ls", "-J");
+
+      return tasks.map(
+        (t) =>
+          new Task(
+            { type: "mise", task: t.name },
+            folder,
+            t.name,
+            "mise",
+            new ProcessExecution(mise.binary, ["run", t.name], {
+              cwd: folder.uri.fsPath,
+            })
+          )
+      );
+    } catch (e) {
+      this.#channel.error(`Failed to find tasks from folder ${folder.uri}`, e);
+      return [];
+    }
+  }
+
+  async provideTasks(): Promise<Task[]> {
+    let tasks: Task[] = [];
+    for (let folder of workspace.workspaceFolders ?? []) {
+      let folderTasks = await this.provideFolderTasks(folder);
+      tasks.push(...folderTasks);
+    }
+
+    return tasks;
+  }
+
+  resolveTask(_task: Task): ProviderResult<Task> {
+    return undefined;
   }
 }
 
 export function activate(context: ExtensionContext) {
-  let channel = window.createOutputChannel("Mise Tasks", { log: true });
-  channel.info("Activated");
-
-  let disposable = tasks.registerTaskProvider("mise", {
-    async provideTasks(): Promise<Task[]> {
-      let tasks: Task[] = [];
-      for (let folder of workspace.workspaceFolders ?? []) {
-        let folderTasks = await provideFolderTasks(channel, folder);
-        tasks = [...tasks, ...folderTasks];
-      }
-
-      channel.info(`Found ${tasks.length} tasks`);
-      return tasks;
-    },
-
-    resolveTask(_task: Task): ProviderResult<Task> {
-      channel.info("Resolve task");
-      return undefined;
-    },
-  });
-
-  context.subscriptions.push(disposable);
+  context.subscriptions.push(new Mise());
 }
 
 // This method is called when your extension is deactivated
